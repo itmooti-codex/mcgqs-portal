@@ -289,7 +289,7 @@
             entities.forEach(e => initializeSocket(e, granularity));
         }
 
-        // — Your ORIGINAL loadCustomRange signature, now using HTTP POST —
+        // — custom range loader using WebSocket GraphQL subscriptions —
         function loadCustomRange(rangeStartDate, rangeEndDate) {
             // pick your dateFormat token — here we hard-code DD,MON,YYYY
             let selectedFormatInRangeFormat = 'Yearly';

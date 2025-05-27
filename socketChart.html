@@ -187,7 +187,7 @@
         const restUrl = `https://mcgqs.vitalstats.app/api/v1/graphql?apiKey=${apiKey}`;
         // "Contacts", "Properties","PartnerLinks"
         const entities = ["Jobs", "Completed Jobs"];
-        const colors = { Jobs: "#3b82f6", Contacts: "#f97316", Properties: "#4ade80", Companies: "#a855f7", PartnerLinks: "#f43f5e" };
+        const colors = { Jobs: "#3b82f6", "Completed Jobs": "#10b981" };
 
         let readyCount = 0, keepAliveInterval;
         let tracesBar = [], tracesLine = [], tracesArea = [],

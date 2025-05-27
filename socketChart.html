@@ -185,7 +185,8 @@
         const visitorRefferalSource = 'Gallagher Melbourne';
         const wsUrl = `wss://mcgqs.vitalstats.app/api/v1/graphql?apiKey=${apiKey}`;
         const restUrl = `https://mcgqs.vitalstats.app/api/v1/graphql?apiKey=${apiKey}`;
-        const entities = ["Jobs", "Contacts", "Properties", "Companies", "PartnerLinks"];
+        // "Contacts", "Properties","PartnerLinks"
+        const entities = ["Jobs", "Completed Jobs"];
         const colors = { Jobs: "#3b82f6", Contacts: "#f97316", Properties: "#4ade80", Companies: "#a855f7", PartnerLinks: "#f43f5e" };
 
         let readyCount = 0, keepAliveInterval;
@@ -201,18 +202,23 @@
         const stackedLayout = { ...commonLayout, barmode: "stack" };
 
         function buildSubscriptionQuery(entity, granularity) {
+             const target = entity === "Completed Jobs" ? "Jobs" : entity;
             let B = "X_WEEK_BEGIN", E = "X_WEEK_END", F = "DAY";
             if (granularity === "monthly") { B = "X_MONTH_BEGIN"; E = "X_MONTH_END"; F = "Week-WK"; }
             if (granularity === "yearly") { B = "X_YEAR_BEGIN"; E = "X_YEAR_END"; F = "MONTH"; } 
-            const referralFilter = entity === "Jobs"
+            const referralFilter = entity === "Jobs" || "Completed Jobs"
                 ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "Gallagher Melbourne" } }]}}]}}`
+                : "";
+                 const statusFilter = entity === "Completed Jobs" 
+                ? `{andWhere:{job_status:"Report Sent"}}`
                 : "";
             return {
                 query: `
-          subscription sub${entity}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
-            subscribeToCalc${entity}(query:[
+          subscription sub${target}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
+            subscribeToCalc${target}(query:[
               {where:{created_at:$${B},_OPERATOR_:gte}} 
               {andWhere:{created_at:$${E},_OPERATOR_:lte}} 
+               ${statusFilter} 
              ${referralFilter} 
             ]){
               totalCount:count(args:[{field:["id"]}])
@@ -307,20 +313,25 @@
 
             // helper to build the payload
             function buildRangeSub(entity) {
-                 const referralFilter = entity === "Jobs"
+                 const target = entity === "Completed Jobs" ? "Jobs" : entity;
+                const statusFilter = entity === "Completed Jobs"
+                ? `{andWhere:{job_status:"Report Sent"}}`
+                : "";
+                 const referralFilter = entity === "Jobs" ||"Completed Jobs"
                     ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "Gallagher Melbourne" } }]}}]}}`
                     : "";
                 return {
                     query: `
-                            subscription subscribeToCalc${entity}(
+                            subscription subscribeToCalc${target}(
                                 $rangeStartDate: TimestampSecondsScalar,
                                 $rangeEndDate:   TimestampSecondsScalar
                                 ) {
-                                subscribeToCalc${entity}(
+                                subscribeToCalc${target}(
                                     query: [
                                         { where:    { created_at: $rangeStartDate, _OPERATOR_: gte } } 
                                         { andWhere: { created_at: $rangeEndDate,   _OPERATOR_: lte } } 
-                                       ${referralFilter}
+                                         ${statusFilter} 
+                                         ${referralFilter}
                                     ]
                                 ) {
                                     totalCount: count(args:[{ field:["id"] }])

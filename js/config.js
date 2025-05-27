@@ -1,5 +1,5 @@
 export default class Config {
-  static apiKey = "PLACEHOLDER_API_KEY";
+  static apiKey = "zeYfVRNaPP_E-fQxxHelQ";
   static visitorReferralSource = 'Gallagher Melbourne';
 
   static get wsUrl() {

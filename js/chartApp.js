@@ -64,7 +64,7 @@ export default class ChartApp {
     if (granularity === 'monthly') { B = 'X_MONTH_BEGIN'; E = 'X_MONTH_END'; F = 'Week-WK'; }
     if (granularity === 'yearly') { B = 'X_YEAR_BEGIN'; E = 'X_YEAR_END'; F = 'MONTH'; }
     const referralFilter = entity === 'Jobs' || entity === 'Completed Jobs'
-      ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: '${Config.visitorReferralSource}' } }]}}]}}`
+      ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
       : '';
     const statusFilter = entity === 'Completed Jobs' ? `{andWhere:{job_status:"Report Sent"}}` : '';
     return {
@@ -159,7 +159,7 @@ export default class ChartApp {
       const target = entity === 'Completed Jobs' ? 'Jobs' : entity;
       const statusFilter = entity === 'Completed Jobs' ? `{andWhere:{job_status:"Report Sent"}}` : '';
       const referralFilter = entity === 'Jobs' || entity === 'Completed Jobs'
-        ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: '${Config.visitorReferralSource}' } }]}}]}}`
+        ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
         : '';
       return {
         query: `
@@ -196,10 +196,10 @@ export default class ChartApp {
         const payload = buildRangeSub(entity);
         socket.send(JSON.stringify({ id: `range_${entity}`, type: 'GQL_START', payload }));
       };
-      socket.onmessage = event => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'GQL_DATA' && data.payload?.data) {
-          const rows = data.payload.data[`subscribeToCalc${entity}`] || [];
+      socket.onmessage = e => {
+        const d = JSON.parse(e.data);
+        if (d.type === 'GQL_DATA' && d.payload?.data) {
+          const rows = Object.values(d.payload.data)[0] || [];
           this.buildTraces(entity, rows, 'Date_Added');
           this.readyCount++;
           if (this.readyCount === this.entities.length) {

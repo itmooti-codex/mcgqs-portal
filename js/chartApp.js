@@ -1,14 +1,11 @@
 import Config from './config.js';
-
-let jobStatusType = "Pending Inspection";
-let jobStatusTypeColor = "#10b981";
-let jobStatusTypeCondtion = "Pending Inspection";
-
-
-
+const { jobStatusType, jobStatusTypeColor, jobStatusTypeCondtion } = Config;
 export default class ChartApp {
+  static refererNameCondition = '';
+  static updatedGranualarity = 'weekly';
+
   constructor() {
-    this.entities = ['Jobs', `${jobStatusType}`];
+    this.entities = ['Jobs', jobStatusType];
     this.colors = { Jobs: '#3b82f6', [jobStatusType]: jobStatusTypeColor };
     this.traces = { bar: [], line: [], area: [], stacked: [], spline: [], step: [] };
     this.readyCount = 0;
@@ -18,6 +15,7 @@ export default class ChartApp {
     this.selectedEnd = null;
     this.sockets = [];
   }
+
 
   get wsUrl() { return Config.wsUrl; }
   resetTraces() {
@@ -42,6 +40,17 @@ export default class ChartApp {
       barmode: 'group'
     };
     const stackedLayout = { ...commonLayout, barmode: 'stack' };
+    const gaugeLayout = {
+      margin: { t: 60, b: 40, l: 20, r: 20 },
+      title: {
+        text: `${jobStatusType} of Total Jobs`,
+        x: 0.5,
+        xanchor: 'center',
+        font: { size: 18 }
+      },
+      showlegend: true
+    };
+
     const chartConfig = [
       { id: 'barChart', key: 'bar', layout: commonLayout },
       { id: 'lineChart', key: 'line', layout: commonLayout },
@@ -49,17 +58,40 @@ export default class ChartApp {
       { id: 'stackedBarChart', key: 'stacked', layout: stackedLayout },
       { id: 'splineChart', key: 'spline', layout: commonLayout },
       { id: 'stepChart', key: 'step', layout: commonLayout },
-      { id: 'comboChart', key: null, layout: commonLayout }
+      { id: 'comboChart', key: null, layout: commonLayout },
+      { id: 'gaugeChart', key: 'gauge', layout: gaugeLayout }
     ];
+    const totalJobs = this.traces.bar
+      .find(t => t.name === 'Jobs')
+      .y.reduce((sum, v) => sum + v, 0);
+    const statusJobs = this.traces.bar
+      .find(t => t.name === jobStatusType)
+      ?.y.reduce((sum, v) => sum + v, 0) || 0;
 
     chartConfig.forEach(c => {
-      if (c.id === 'comboChart') {
+      if (c.key === 'gauge') {
+        const gaugeTrace = [{
+          type: 'indicator',
+          mode: 'gauge',
+          value: statusJobs,
+          gauge: {
+            axis: { range: [0, totalJobs] },
+            bar: { color: this.colors[jobStatusType] },
+            steps: [
+              { range: [0, statusJobs], color: this.colors[jobStatusType] },
+              { range: [statusJobs, totalJobs], color: this.colors['Jobs'] }
+            ]
+          }
+        }];
+        Plotly.newPlot(c.id, gaugeTrace, c.layout);
+      } else if (c.id === 'comboChart') {
         Plotly.newPlot(c.id, this.traces.bar.concat(this.traces.line), c.layout);
       } else {
         Plotly.newPlot(c.id, this.traces[c.key], c.layout);
       }
     });
   }
+
   buildSubscriptionQuery(entity, granularity) {
     const target = entity === `${jobStatusType}` ? 'Jobs' : entity;
     let B = 'X_WEEK_BEGIN', E = 'X_WEEK_END', F = 'DAY';
@@ -76,7 +108,8 @@ export default class ChartApp {
               {where:{created_at:$${B},_OPERATOR_:gte}}
               {andWhere:{created_at:$${E},_OPERATOR_:lte}}
                ${statusFilter}
-               ${ referralFilter }
+               ${referralFilter}
+               ${ChartApp.refererNameCondition}
             ]){
               totalCount:count(args:[{field:["id"]}])
               bucket:field(arg:["created_at"])@dateFormat(value:"${F}")
@@ -142,6 +175,8 @@ export default class ChartApp {
   }
 
   loadCustomRange(rangeStartDate, rangeEndDate) {
+    this.selectedStart = rangeStartDate;
+    this.selectedEnd = rangeEndDate;
     this.closeSockets();
 
     let selectedFormatInRangeFormat = 'Yearly';
@@ -174,7 +209,8 @@ export default class ChartApp {
                         { where:    { created_at: $rangeStartDate, _OPERATOR_: gte } }
                         { andWhere: { created_at: $rangeEndDate,   _OPERATOR_: lte } }
                          ${statusFilter}
-                         ${ referralFilter}
+                         ${referralFilter}
+                         ${ChartApp.refererNameCondition}
                     ]
                 ) {
                     totalCount: count(args:[{ field:["id"] }])
@@ -226,6 +262,7 @@ export default class ChartApp {
     ['weeklyBtn', 'monthlyBtn', 'yearlyBtn'].forEach(id => {
       document.getElementById(id).addEventListener('click', () => {
         this.currentGranularity = id.replace('Btn', '');
+        ChartApp.updatedGranularity = this.currentGranularity;
         ['weeklyBtn', 'monthlyBtn', 'yearlyBtn'].forEach(x => {
           document.getElementById(x).classList.replace('bg-blue-500', 'bg-gray-300');
           document.getElementById(x).classList.replace('text-white', 'text-gray-700');
@@ -281,6 +318,9 @@ export default class ChartApp {
         const box = document.createElement('div');
         box.className = 'w-4 h-4 mr-2 border rounded-sm flex items-center justify-center';
         if (selectedEntities.includes(item)) {
+          if (item === jobStatusType) {
+            box.setAttribute('data-id', jobStatusType);
+          }
           box.classList.add('border-blue-600');
           box.innerHTML = `<svg class="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>`;
         }
@@ -341,5 +381,16 @@ export default class ChartApp {
 
   start() {
     this.setupControls();
+  }
+  refererConditionUpdater(name) {
+    console.log('ChartApp text method called', name);
+    if (!name) {
+      ChartApp.refererNameCondition = '';
+    } else {
+      ChartApp.refererNameCondition = `{ andWhere: { Referrer: [{ where: { id: ${name} } }] } }`;
+    }
+    const granularity = ChartApp.updatedGranularity || 'weekly';
+    console.log('granualarity is', granularity);
+    this.loadData(granularity);
   }
 }

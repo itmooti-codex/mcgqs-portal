@@ -1,9 +1,15 @@
 import Config from './config.js';
 
+let jobStatusType = "Pending Inspection";
+let jobStatusTypeColor = "#10b981";
+let jobStatusTypeCondtion = "Pending Inspection";
+
+
+
 export default class ChartApp {
   constructor() {
-    this.entities = ['Jobs', 'Completed Jobs'];
-    this.colors = { Jobs: '#3b82f6', 'Completed Jobs': '#10b981' };
+    this.entities = ['Jobs', `${jobStatusType}`];
+    this.colors = { Jobs: '#3b82f6', [jobStatusType]: jobStatusTypeColor };
     this.traces = { bar: [], line: [], area: [], stacked: [], spline: [], step: [] };
     this.readyCount = 0;
     this.keepAliveInterval = null;
@@ -14,11 +20,9 @@ export default class ChartApp {
   }
 
   get wsUrl() { return Config.wsUrl; }
-
   resetTraces() {
     Object.keys(this.traces).forEach(k => this.traces[k] = []);
   }
-
   buildTraces(entity, rows, bucketKey) {
     const x = [], y = [];
     rows.forEach(r => { x.push(r[bucketKey]); y.push(r.totalCount || 0); });
@@ -30,7 +34,6 @@ export default class ChartApp {
     this.traces.spline.push({ x, y, name: entity, type: 'scatter', mode: 'lines', line: { shape: 'spline' }, marker: { color: clr } });
     this.traces.step.push({ x, y, name: entity, type: 'scatter', mode: 'lines', line: { shape: 'hv' }, marker: { color: clr } });
   }
-
   renderCharts() {
     const commonLayout = {
       yaxis: { title: 'Count' },
@@ -57,16 +60,15 @@ export default class ChartApp {
       }
     });
   }
-
   buildSubscriptionQuery(entity, granularity) {
-    const target = entity === 'Completed Jobs' ? 'Jobs' : entity;
+    const target = entity === `${jobStatusType}` ? 'Jobs' : entity;
     let B = 'X_WEEK_BEGIN', E = 'X_WEEK_END', F = 'DAY';
     if (granularity === 'monthly') { B = 'X_MONTH_BEGIN'; E = 'X_MONTH_END'; F = 'Week-WK'; }
     if (granularity === 'yearly') { B = 'X_YEAR_BEGIN'; E = 'X_YEAR_END'; F = 'MONTH'; }
-    const referralFilter = entity === 'Jobs' || entity === 'Completed Jobs'
+    const referralFilter = entity === 'Jobs' || entity === `${jobStatusType}`
       ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
       : '';
-    const statusFilter = entity === 'Completed Jobs' ? `{andWhere:{job_status:"Report Sent"}}` : '';
+    const statusFilter = entity === `${jobStatusType}` ? `{andWhere:{job_status:"${jobStatusTypeCondtion}"}}` : '';
     return {
       query: `
           subscription sub${target}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
@@ -74,7 +76,7 @@ export default class ChartApp {
               {where:{created_at:$${B},_OPERATOR_:gte}}
               {andWhere:{created_at:$${E},_OPERATOR_:lte}}
                ${statusFilter}
-             ${referralFilter}
+               ${ referralFilter }
             ]){
               totalCount:count(args:[{field:["id"]}])
               bucket:field(arg:["created_at"])@dateFormat(value:"${F}")
@@ -123,7 +125,7 @@ export default class ChartApp {
 
   closeSockets() {
     this.sockets.forEach(s => {
-      try { s.close(); } catch (_) {}
+      try { s.close(); } catch (_) { }
     });
     this.sockets = [];
     if (this.keepAliveInterval) clearInterval(this.keepAliveInterval);
@@ -156,9 +158,9 @@ export default class ChartApp {
     document.getElementById('loader').classList.remove('hidden');
 
     const buildRangeSub = entity => {
-      const target = entity === 'Completed Jobs' ? 'Jobs' : entity;
-      const statusFilter = entity === 'Completed Jobs' ? `{andWhere:{job_status:"Report Sent"}}` : '';
-      const referralFilter = entity === 'Jobs' || entity === 'Completed Jobs'
+      const target = entity === `${jobStatusType}` ? 'Jobs' : entity;
+      const statusFilter = entity === `${jobStatusType}` ? `{andWhere:{job_status:"${jobStatusTypeCondtion}"}}` : '';
+      const referralFilter = entity === 'Jobs' || entity === `${jobStatusType}`
         ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
         : '';
       return {
@@ -172,7 +174,7 @@ export default class ChartApp {
                         { where:    { created_at: $rangeStartDate, _OPERATOR_: gte } }
                         { andWhere: { created_at: $rangeEndDate,   _OPERATOR_: lte } }
                          ${statusFilter}
-                         ${referralFilter}
+                         ${ referralFilter}
                     ]
                 ) {
                     totalCount: count(args:[{ field:["id"] }])
@@ -183,7 +185,6 @@ export default class ChartApp {
         variables: { rangeStartDate, rangeEndDate }
       };
     };
-
     this.entities.forEach(entity => {
       const socket = new WebSocket(this.wsUrl, 'vitalstats');
       this.sockets.push(socket);

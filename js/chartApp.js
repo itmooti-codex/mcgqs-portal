@@ -1,12 +1,20 @@
 import Config from './config.js';
-const { jobStatusType, jobStatusTypeColor, jobStatusTypeCondtion } = Config;
+
 export default class ChartApp {
   static refererNameCondition = '';
   static updatedGranualarity = 'weekly';
 
   constructor() {
-    this.entities = ['Jobs', jobStatusType];
-    this.colors = { Jobs: '#3b82f6', [jobStatusType]: jobStatusTypeColor };
+    const statuses = Config.jobStatuses;
+    this.entities = ['Jobs','Contacts', ...statuses.map(s => s.type)];
+    this.colors = {
+      Jobs: '#3b82f6',
+      Contacts: '#8b5cf6',
+      ...statuses.reduce((acc, s) => {
+        acc[s.type] = s.color;
+        return acc;
+      }, {})
+    };
     this.traces = { bar: [], line: [], area: [], stacked: [], spline: [], step: [] };
     this.readyCount = 0;
     this.keepAliveInterval = null;
@@ -16,11 +24,12 @@ export default class ChartApp {
     this.sockets = [];
   }
 
-
   get wsUrl() { return Config.wsUrl; }
+
   resetTraces() {
     Object.keys(this.traces).forEach(k => this.traces[k] = []);
   }
+
   buildTraces(entity, rows, bucketKey) {
     const x = [], y = [];
     rows.forEach(r => { x.push(r[bucketKey]); y.push(r.totalCount || 0); });
@@ -32,6 +41,7 @@ export default class ChartApp {
     this.traces.spline.push({ x, y, name: entity, type: 'scatter', mode: 'lines', line: { shape: 'spline' }, marker: { color: clr } });
     this.traces.step.push({ x, y, name: entity, type: 'scatter', mode: 'lines', line: { shape: 'hv' }, marker: { color: clr } });
   }
+
   renderCharts() {
     const commonLayout = {
       yaxis: { title: 'Count' },
@@ -40,10 +50,22 @@ export default class ChartApp {
       barmode: 'group'
     };
     const stackedLayout = { ...commonLayout, barmode: 'stack' };
+
+    // Compute totals for gauge — one gauge per STATUS if you like, but here's the original single-gauge logic:
+    const totalJobs = this.traces.bar
+      .find(t => t.name === 'Jobs')
+      .y.reduce((sum, v) => sum + v, 0);
+
+    // Pick the first status for gauge (just like before)
+    const firstStatus = Config.jobStatuses[0];
+    const statusJobs = this.traces.bar
+      .find(t => t.name === firstStatus.type)
+      ?.y.reduce((sum, v) => sum + v, 0) || 0;
+
     const gaugeLayout = {
       margin: { t: 60, b: 40, l: 20, r: 20 },
       title: {
-        text: `${jobStatusType} of Total Jobs`,
+        text: `${firstStatus.type} of Total Jobs`,
         x: 0.5,
         xanchor: 'center',
         font: { size: 18 }
@@ -61,12 +83,6 @@ export default class ChartApp {
       { id: 'comboChart', key: null, layout: commonLayout },
       { id: 'gaugeChart', key: 'gauge', layout: gaugeLayout }
     ];
-    const totalJobs = this.traces.bar
-      .find(t => t.name === 'Jobs')
-      .y.reduce((sum, v) => sum + v, 0);
-    const statusJobs = this.traces.bar
-      .find(t => t.name === jobStatusType)
-      ?.y.reduce((sum, v) => sum + v, 0) || 0;
 
     chartConfig.forEach(c => {
       if (c.key === 'gauge') {
@@ -76,9 +92,9 @@ export default class ChartApp {
           value: statusJobs,
           gauge: {
             axis: { range: [0, totalJobs] },
-            bar: { color: this.colors[jobStatusType] },
+            bar: { color: this.colors[firstStatus.type] },
             steps: [
-              { range: [0, statusJobs], color: this.colors[jobStatusType] },
+              { range: [0, statusJobs], color: this.colors[firstStatus.type] },
               { range: [statusJobs, totalJobs], color: this.colors['Jobs'] }
             ]
           }
@@ -93,28 +109,35 @@ export default class ChartApp {
   }
 
   buildSubscriptionQuery(entity, granularity) {
-    const target = entity === `${jobStatusType}` ? 'Jobs' : entity;
+    
     let B = 'X_WEEK_BEGIN', E = 'X_WEEK_END', F = 'DAY';
     if (granularity === 'monthly') { B = 'X_MONTH_BEGIN'; E = 'X_MONTH_END'; F = 'Week-WK'; }
     if (granularity === 'yearly') { B = 'X_YEAR_BEGIN'; E = 'X_YEAR_END'; F = 'MONTH'; }
-    const referralFilter = entity === 'Jobs' || entity === `${jobStatusType}`
+
+    // LOOK UP THE RIGHT CONDITION FOR THIS ENTITY
+    const jobStatus = Config.jobStatuses.find(s => s.type === entity) || {};
+    const statusFilter = entity === jobStatus.type
+      ? `{andWhere:{job_status:"${jobStatus.condition}"}}`
+      : '';
+    const target = entity === jobStatus.type ? 'Jobs' : entity;
+    const referralFilter = entity === 'Jobs' || entity === jobStatus.type
       ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
       : '';
-    const statusFilter = entity === `${jobStatusType}` ? `{andWhere:{job_status:"${jobStatusTypeCondtion}"}}` : '';
+
     return {
       query: `
-          subscription sub${target}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
-            subscribeToCalc${target}(query:[
-              {where:{created_at:$${B},_OPERATOR_:gte}}
-              {andWhere:{created_at:$${E},_OPERATOR_:lte}}
-               ${statusFilter}
-               ${referralFilter}
-               ${ChartApp.refererNameCondition}
-            ]){
-              totalCount:count(args:[{field:["id"]}])
-              bucket:field(arg:["created_at"])@dateFormat(value:"${F}")
-            }
-          }`,
+        subscription sub${target}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
+          subscribeToCalc${target}(query:[
+            {where:{created_at:$${B},_OPERATOR_:gte}}
+            {andWhere:{created_at:$${E},_OPERATOR_:lte}}
+             ${statusFilter}
+             ${referralFilter}
+             ${ChartApp.refererNameCondition}
+          ]){
+            totalCount:count(args:[{field:["id"]}])
+            bucket:field(arg:["created_at"])@dateFormat(value:"${F}")
+          }
+        }`,
       variables: { [B]: 0, [E]: 0 }
     };
   }
@@ -193,9 +216,12 @@ export default class ChartApp {
     document.getElementById('loader').classList.remove('hidden');
 
     const buildRangeSub = entity => {
-      const target = entity === `${jobStatusType}` ? 'Jobs' : entity;
-      const statusFilter = entity === `${jobStatusType}` ? `{andWhere:{job_status:"${jobStatusTypeCondtion}"}}` : '';
-      const referralFilter = entity === 'Jobs' || entity === `${jobStatusType}`
+      const jobStatus = Config.jobStatuses.find(s => s.type === entity) || {};
+      const statusFilter = entity === jobStatus.type
+        ? `{andWhere:{job_status:"${jobStatus.condition}"}}`
+        : '';
+      const target = entity === jobStatus.type ? 'Jobs' : entity;
+      const referralFilter = entity === 'Jobs' || entity === jobStatus.type
         ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
         : '';
       return {

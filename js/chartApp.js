@@ -1,24 +1,28 @@
 import Config from './config.js';
+const gaugeIndices = [0, 1];
 
 export default class ChartApp {
   static refererNameCondition = '';
   static updatedGranualarity = 'weekly';
 
   constructor() {
-    const statuses = Config.jobStatuses;
-    this.entities = ['Jobs','Contacts', ...statuses.map(s => s.type)];
-    this.colors = {
-      Jobs: '#3b82f6',
-      Contacts: '#8b5cf6',
-      ...statuses.reduce((acc, s) => {
-        acc[s.type] = s.color;
-        return acc;
-      }, {})
-    };
+    this.selectedEntities = [];
+    this.colors = {};
+
+    Object.entries(Config.entitiesConfig).forEach(([entity, cfg]) => {
+      if (cfg.selected !== false) this.selectedEntities.push(entity);
+      this.colors[entity] = cfg.defaultColor;
+      cfg.statuses.forEach(s => {
+        if (s.selected !== false) this.selectedEntities.push(s.type);
+        this.colors[s.type] = s.color;
+      });
+    });
+
+    this.entities = [...this.selectedEntities];
     this.traces = { bar: [], line: [], area: [], stacked: [], spline: [], step: [] };
     this.readyCount = 0;
     this.keepAliveInterval = null;
-    this.currentGranularity = 'weekly';
+    this.currentGranularity = ChartApp.updatedGranualarity;
     this.selectedStart = null;
     this.selectedEnd = null;
     this.sockets = [];
@@ -51,28 +55,6 @@ export default class ChartApp {
     };
     const stackedLayout = { ...commonLayout, barmode: 'stack' };
 
-    // Compute totals for gauge — one gauge per STATUS if you like, but here's the original single-gauge logic:
-    const totalJobs = this.traces.bar
-      .find(t => t.name === 'Jobs')
-      .y.reduce((sum, v) => sum + v, 0);
-
-    // Pick the first status for gauge (just like before)
-    const firstStatus = Config.jobStatuses[0];
-    const statusJobs = this.traces.bar
-      .find(t => t.name === firstStatus.type)
-      ?.y.reduce((sum, v) => sum + v, 0) || 0;
-
-    const gaugeLayout = {
-      margin: { t: 60, b: 40, l: 20, r: 20 },
-      title: {
-        text: `${firstStatus.type} of Total Jobs`,
-        x: 0.5,
-        xanchor: 'center',
-        font: { size: 18 }
-      },
-      showlegend: true
-    };
-
     const chartConfig = [
       { id: 'barChart', key: 'bar', layout: commonLayout },
       { id: 'lineChart', key: 'line', layout: commonLayout },
@@ -80,87 +62,175 @@ export default class ChartApp {
       { id: 'stackedBarChart', key: 'stacked', layout: stackedLayout },
       { id: 'splineChart', key: 'spline', layout: commonLayout },
       { id: 'stepChart', key: 'step', layout: commonLayout },
-      { id: 'comboChart', key: null, layout: commonLayout },
-      { id: 'gaugeChart', key: 'gauge', layout: gaugeLayout }
+      { id: 'comboChart', key: null, layout: commonLayout }
     ];
-
     chartConfig.forEach(c => {
-      if (c.key === 'gauge') {
-        const gaugeTrace = [{
-          type: 'indicator',
-          mode: 'gauge',
-          value: statusJobs,
+      const data = c.id === 'comboChart'
+        ? this.traces.bar.concat(this.traces.line)
+        : this.traces[c.key];
+      Plotly.newPlot(c.id, data, c.layout);
+    });
+
+    // Gauge chart only if Jobs is selected
+    const gaugeEl = document.getElementById('gaugeChart');
+    if (this.entities.includes('Jobs')) {
+      gaugeEl.classList.remove('hidden');
+      const jobTrace = this.traces.bar.find(t => t.name === 'Jobs');
+      if (!jobTrace) return;
+      const totalJobs = jobTrace.y.reduce((sum, v) => sum + v, 0);
+      const jobCfg = Config.entitiesConfig.Jobs;
+      const selStatuses = jobCfg.statuses.filter(s => s.selected !== false);
+      const gauges = gaugeIndices.map((idx, i) => {
+        const s = selStatuses[idx];
+        if (!s) return null;
+        const sTrace = this.traces.bar.find(t => t.name === s.type);
+        const stCount = sTrace ? sTrace.y.reduce((sum, v) => sum + v, 0) : 0;
+        const domainStart = i * 0.5, domainEnd = domainStart + 0.5;
+        return {
+          type: 'indicator', mode: 'gauge+number', value: stCount, title: { text: s.type },
+          domain: { x: [domainStart, domainEnd], y: [0, 1] },
           gauge: {
             axis: { range: [0, totalJobs] },
-            bar: { color: this.colors[firstStatus.type] },
+            bar: { color: this.colors[s.type] },
             steps: [
-              { range: [0, statusJobs], color: this.colors[firstStatus.type] },
-              { range: [statusJobs, totalJobs], color: this.colors['Jobs'] }
+              { range: [0, stCount], color: this.colors[s.type] },
+              { range: [stCount, totalJobs], color: this.colors['Jobs'] }
             ]
           }
-        }];
-        Plotly.newPlot(c.id, gaugeTrace, c.layout);
-      } else if (c.id === 'comboChart') {
-        Plotly.newPlot(c.id, this.traces.bar.concat(this.traces.line), c.layout);
-      } else {
-        Plotly.newPlot(c.id, this.traces[c.key], c.layout);
-      }
-    });
+        };
+      }).filter(Boolean);
+      Plotly.newPlot('gaugeChart', gauges, {
+        margin: { t: 60, b: 40, l: 20, r: 20 },
+        grid: { rows: 1, columns: gauges.length, pattern: 'independent' }
+      });
+    } else {
+      gaugeEl.classList.add('hidden');
+    }
   }
 
   buildSubscriptionQuery(entity, granularity) {
-    
+    // For weekly/monthly/yearly
     let B = 'X_WEEK_BEGIN', E = 'X_WEEK_END', F = 'DAY';
     if (granularity === 'monthly') { B = 'X_MONTH_BEGIN'; E = 'X_MONTH_END'; F = 'Week-WK'; }
     if (granularity === 'yearly') { B = 'X_YEAR_BEGIN'; E = 'X_YEAR_END'; F = 'MONTH'; }
 
-    // LOOK UP THE RIGHT CONDITION FOR THIS ENTITY
-    const jobStatus = Config.jobStatuses.find(s => s.type === entity) || {};
-    const statusFilter = entity === jobStatus.type
-      ? `{andWhere:{job_status:"${jobStatus.condition}"}}`
+    // Find parent + statusFilter
+    let parent = entity, statusFilter = '';
+    if (!Config.entitiesConfig[entity]) {
+      for (const [ent, cfg] of Object.entries(Config.entitiesConfig)) {
+        const m = cfg.statuses.find(s => s.type === entity);
+        if (m) {
+          parent = ent;
+          statusFilter = `{andWhere:{${cfg.statusField}:"${m.condition}"}}`;
+          break;
+        }
+      }
+    }
+
+    // referral only for Jobs
+    const rf = parent === 'Jobs'
+      ? `{andWhere:{${Config.entitiesConfig[parent].referralField}:[{where:{Company:[{where:{name:"${Config.visitorReferralSource}"}}]}}]}}`
       : '';
-    const target = entity === jobStatus.type ? 'Jobs' : entity;
-    const referralFilter = entity === 'Jobs' || entity === jobStatus.type
-      ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
-      : '';
+
+    // refererNameCondition only for Jobs
+    const rc = (parent === 'Jobs') ? ChartApp.refererNameCondition : '';
 
     return {
       query: `
-        subscription sub${target}($${B}:TimestampSecondsScalar,$${E}:TimestampSecondsScalar){
-          subscribeToCalc${target}(query:[
-            {where:{created_at:$${B},_OPERATOR_:gte}}
-            {andWhere:{created_at:$${E},_OPERATOR_:lte}}
-             ${statusFilter}
-             ${referralFilter}
-             ${ChartApp.refererNameCondition}
-          ]){
-            totalCount:count(args:[{field:["id"]}])
-            bucket:field(arg:["created_at"])@dateFormat(value:"${F}")
+        subscription sub${parent}($${B}: TimestampSecondsScalar, $${E}: TimestampSecondsScalar) {
+          subscribeToCalc${parent}(query:[
+            { where:    { created_at: $${B}, _OPERATOR_: gte } },
+            { andWhere: { created_at: $${E}, _OPERATOR_: lte } },
+            ${statusFilter},
+            ${rf},
+            ${rc}
+          ]) {
+            totalCount: count(args:[{ field:["id"] }])
+            bucket:     field(arg:["created_at"]) @dateFormat(value:"${F}")
           }
         }`,
       variables: { [B]: 0, [E]: 0 }
     };
   }
 
-  initializeSocket(entity, granularity) {
+  buildRangeSubscriptionQuery(entity, dateFormat) {
+    // For custom date range
+    let parent = entity, statusFilter = '';
+    if (!Config.entitiesConfig[entity]) {
+      for (const [ent, cfg] of Object.entries(Config.entitiesConfig)) {
+        const m = cfg.statuses.find(s => s.type === entity);
+        if (m) {
+          parent = ent;
+          statusFilter = `{andWhere:{${cfg.statusField}:"${m.condition}"}}`;
+          break;
+        }
+      }
+    }
+
+    // referral only for Jobs
+    const rf = parent === 'Jobs'
+      ? `{andWhere:{${Config.entitiesConfig[parent].referralField}:[{where:{Company:[{where:{name:"${Config.visitorReferralSource}"}}]}}]}}`
+      : '';
+
+    // refererNameCondition only for Jobs
+    const rc = (parent === 'Jobs') ? ChartApp.refererNameCondition : '';
+
+    return {
+      query: `
+        subscription subRange${parent}(
+          $rangeStart: TimestampSecondsScalar,
+          $rangeEnd:   TimestampSecondsScalar
+        ) {
+          subscribeToCalc${parent}(query:[
+            { where:    { created_at: $rangeStart, _OPERATOR_: gte } },
+            { andWhere: { created_at: $rangeEnd,   _OPERATOR_: lte } },
+            ${statusFilter},
+            ${rf},
+            ${rc}
+          ]) {
+            totalCount: count(args:[{ field:["id"] }])
+            Date_Added: field(arg:["created_at"]) @dateFormat(value:"${dateFormat}")
+          }
+        }`,
+      variables: { rangeStart: 0, rangeEnd: 0 }
+    };
+  }
+
+  initializeSocket(entity, granularityOrFormat, isRange = false) {
     const socket = new WebSocket(this.wsUrl, 'vitalstats');
     this.sockets.push(socket);
 
     socket.onopen = () => {
       this.keepAliveInterval = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN)
+        if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'KEEP_ALIVE' }));
+        }
       }, 28000);
       socket.send(JSON.stringify({ type: 'CONNECTION_INIT' }));
-      const { query, variables } = this.buildSubscriptionQuery(entity, granularity);
-      socket.send(JSON.stringify({ id: `sub_${entity}`, type: 'GQL_START', payload: { query, variables } }));
+
+      const { query, variables } = isRange
+        ? this.buildRangeSubscriptionQuery(entity, granularityOrFormat)
+        : this.buildSubscriptionQuery(entity, granularityOrFormat);
+
+      // override variables for range
+      if (isRange) {
+        variables.rangeStart = this.selectedStart;
+        variables.rangeEnd = this.selectedEnd;
+      }
+
+      socket.send(JSON.stringify({
+        id: isRange ? `range_${entity}` : `sub_${entity}`,
+        type: 'GQL_START',
+        payload: { query, variables }
+      }));
     };
 
     socket.onmessage = e => {
       const d = JSON.parse(e.data);
       if (d.type === 'GQL_DATA' && d.payload?.data) {
         const rows = Object.values(d.payload.data)[0] || [];
-        this.buildTraces(entity, rows, 'bucket');
+        const key = isRange ? 'Date_Added' : 'bucket';
+        this.buildTraces(entity, rows, key);
         this.readyCount++;
         if (this.readyCount === this.entities.length) {
           clearInterval(this.keepAliveInterval);
@@ -175,14 +245,13 @@ export default class ChartApp {
         }
       }
     };
+
     socket.onerror = () => console.error(`WS error ${entity}`);
     socket.onclose = () => clearInterval(this.keepAliveInterval);
   }
 
   closeSockets() {
-    this.sockets.forEach(s => {
-      try { s.close(); } catch (_) { }
-    });
+    this.sockets.forEach(s => { try { s.close(); } catch { } });
     this.sockets = [];
     if (this.keepAliveInterval) clearInterval(this.keepAliveInterval);
   }
@@ -194,93 +263,26 @@ export default class ChartApp {
     document.getElementById('chartGrid').classList.add('hidden');
     document.getElementById('noDataMessage').classList.add('hidden');
     document.getElementById('loader').classList.remove('hidden');
-    this.entities.forEach(e => this.initializeSocket(e, granularity));
+    this.entities.forEach(e => this.initializeSocket(e, granularity, false));
   }
 
-  loadCustomRange(rangeStartDate, rangeEndDate) {
-    this.selectedStart = rangeStartDate;
-    this.selectedEnd = rangeEndDate;
+  loadCustomRange(rangeStart, rangeEnd) {
+    this.selectedStart = rangeStart;
+    this.selectedEnd = rangeEnd;
     this.closeSockets();
-
-    let selectedFormatInRangeFormat = 'Yearly';
-    const selectedFormatInRange = document.getElementById('selectedFormatInRange')?.textContent;
-    if (selectedFormatInRange === 'Yearly') selectedFormatInRangeFormat = 'MONTH';
-    else if (selectedFormatInRange === 'Monthly') selectedFormatInRangeFormat = 'Week-WK';
-    else if (selectedFormatInRange === 'Weekly') selectedFormatInRangeFormat = 'DAY';
-    const dateFormat = selectedFormatInRangeFormat;
-
     this.readyCount = 0;
     this.resetTraces();
     document.getElementById('chartGrid').classList.add('hidden');
     document.getElementById('noDataMessage').classList.add('hidden');
     document.getElementById('loader').classList.remove('hidden');
 
-    const buildRangeSub = entity => {
-      const jobStatus = Config.jobStatuses.find(s => s.type === entity) || {};
-      const statusFilter = entity === jobStatus.type
-        ? `{andWhere:{job_status:"${jobStatus.condition}"}}`
-        : '';
-      const target = entity === jobStatus.type ? 'Jobs' : entity;
-      const referralFilter = entity === 'Jobs' || entity === jobStatus.type
-        ? `{andWhere: {Referral_Source: [{where: {Company: [{ where: { name: "${Config.visitorReferralSource}" } }]}}]}}`
-        : '';
-      return {
-        query: `
-            subscription subscribeToCalc${target}(
-                $rangeStartDate: TimestampSecondsScalar,
-                $rangeEndDate:   TimestampSecondsScalar
-                ) {
-                subscribeToCalc${target}(
-                    query: [
-                        { where:    { created_at: $rangeStartDate, _OPERATOR_: gte } }
-                        { andWhere: { created_at: $rangeEndDate,   _OPERATOR_: lte } }
-                         ${statusFilter}
-                         ${referralFilter}
-                         ${ChartApp.refererNameCondition}
-                    ]
-                ) {
-                    totalCount: count(args:[{ field:["id"] }])
-                    Date_Added:  field(arg:["created_at"]) @dateFormat(value:"${dateFormat}")
-                }
-            }
-         `,
-        variables: { rangeStartDate, rangeEndDate }
-      };
-    };
-    this.entities.forEach(entity => {
-      const socket = new WebSocket(this.wsUrl, 'vitalstats');
-      this.sockets.push(socket);
-      socket.onopen = () => {
-        this.keepAliveInterval = setInterval(() => {
-          if (socket.readyState === WebSocket.OPEN)
-            socket.send(JSON.stringify({ type: 'KEEP_ALIVE' }));
-        }, 28000);
-        socket.send(JSON.stringify({ type: 'CONNECTION_INIT' }));
-        const payload = buildRangeSub(entity);
-        socket.send(JSON.stringify({ id: `range_${entity}`, type: 'GQL_START', payload }));
-      };
-      socket.onmessage = e => {
-        const d = JSON.parse(e.data);
-        if (d.type === 'GQL_DATA' && d.payload?.data) {
-          const rows = Object.values(d.payload.data)[0] || [];
-          this.buildTraces(entity, rows, 'Date_Added');
-          this.readyCount++;
-          if (this.readyCount === this.entities.length) {
-            clearInterval(this.keepAliveInterval);
-            document.getElementById('loader').classList.add('hidden');
-            const hasData = this.traces.bar.some(t => t.y.some(v => v > 0));
-            if (hasData) {
-              document.getElementById('chartGrid').classList.remove('hidden');
-              this.renderCharts();
-            } else {
-              document.getElementById('noDataMessage').classList.remove('hidden');
-            }
-          }
-        }
-      };
-      socket.onerror = () => console.error(`WebSocket error for ${entity}`);
-      socket.onclose = () => clearInterval(this.keepAliveInterval);
-    });
+    // determine dateFormat from UI
+    const txt = document.getElementById('selectedFormatInRange')?.textContent;
+    const dateFormat = txt === 'Yearly' ? 'MONTH'
+      : txt === 'Monthly' ? 'Week-WK'
+        : 'DAY';
+
+    this.entities.forEach(e => this.initializeSocket(e, dateFormat, true));
   }
 
   setupControls() {
@@ -288,7 +290,7 @@ export default class ChartApp {
     ['weeklyBtn', 'monthlyBtn', 'yearlyBtn'].forEach(id => {
       document.getElementById(id).addEventListener('click', () => {
         this.currentGranularity = id.replace('Btn', '');
-        ChartApp.updatedGranularity = this.currentGranularity;
+        ChartApp.updatedGranualarity = this.currentGranularity;
         ['weeklyBtn', 'monthlyBtn', 'yearlyBtn'].forEach(x => {
           document.getElementById(x).classList.replace('bg-blue-500', 'bg-gray-300');
           document.getElementById(x).classList.replace('text-white', 'text-gray-700');
@@ -300,6 +302,7 @@ export default class ChartApp {
       });
     });
 
+    // date-range picker
     $('#dateRange').daterangepicker({
       opens: 'center', autoUpdateInput: false,
       locale: { cancelLabel: 'Clear', format: 'YYYY-MM-DD' }
@@ -312,66 +315,24 @@ export default class ChartApp {
       );
     });
     $('#dateRange').on('cancel.daterangepicker', () => {
-      $('#dateRange').val(''); this.selectedStart = this.selectedEnd = null;
+      $('#dateRange').val('');
+      this.selectedStart = this.selectedEnd = null;
     });
-    $('#viewRangeBtn').on('click', () => {
+    document.getElementById('viewRangeBtn').addEventListener('click', () => {
       if (!this.selectedStart || !this.selectedEnd) return alert('Select a valid date range');
       this.loadCustomRange(this.selectedStart, this.selectedEnd);
     });
 
-    // Multi-select dropdown
+    // dropdown multi-select
     const multiselect = document.getElementById('multiselect');
     const toggle = document.getElementById('dropdown-toggle');
     const input = document.getElementById('dropdown-input');
     const list = document.getElementById('dropdown-list');
-    const selectedContainer = document.getElementById('selected-items');
-    const dropdownEntities = [...this.entities];
-    let selectedEntities = [...this.entities];
-
-    const populateList = () => {
-      list.innerHTML = '';
-      dropdownEntities.forEach(item => {
-        const li = document.createElement('li');
-        li.className = 'flex items-center px-2 py-1 hover:bg-gray-100 cursor-pointer';
-        li.addEventListener('click', e => {
-          e.stopPropagation();
-          const idx = selectedEntities.indexOf(item);
-          if (idx > -1) selectedEntities.splice(idx, 1);
-          else selectedEntities.push(item);
-          updateSelected();
-          populateList();
-        });
-        const box = document.createElement('div');
-        box.className = 'w-4 h-4 mr-2 border rounded-sm flex items-center justify-center';
-        if (selectedEntities.includes(item)) {
-          if (item === jobStatusType) {
-            box.setAttribute('data-id', jobStatusType);
-          }
-          box.classList.add('border-blue-600');
-          box.innerHTML = `<svg class="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>`;
-        }
-        li.append(box, document.createTextNode(item));
-        list.appendChild(li);
-      });
-      const applyLi = document.createElement('li');
-      applyLi.className = 'px-2 py-2 flex justify-center hover:bg-gray-100 cursor-pointer';
-      const applyButton = document.createElement('button');
-      applyButton.textContent = 'Apply';
-      applyButton.className = 'bg-blue-600 text-white px-3 py-1 rounded w-full';
-      applyButton.addEventListener('click', e => {
-        e.stopPropagation();
-        this.entities.splice(0, this.entities.length, ...selectedEntities);
-        list.classList.add('hidden');
-        if (this.selectedStart && this.selectedEnd) this.loadCustomRange(this.selectedStart, this.selectedEnd);
-        else this.loadData(this.currentGranularity);
-        updateSelected();
-      });
-      applyLi.appendChild(applyButton);
-      list.appendChild(applyLi);
-    };
+    const selContainer = document.getElementById('selected-items');
+    let selectedEntities = [...this.selectedEntities];
 
     const updateSelected = () => {
-      selectedContainer.innerHTML = '';
+      selContainer.innerHTML = '';
       selectedEntities.forEach(item => {
         const badge = document.createElement('div');
         badge.className = 'flex items-center bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-sm';
@@ -381,23 +342,105 @@ export default class ChartApp {
         remove.className = 'ml-1 cursor-pointer';
         remove.addEventListener('click', e => {
           e.stopPropagation();
-          selectedEntities.splice(selectedEntities.indexOf(item), 1);
+          selectedEntities = selectedEntities.filter(x => x !== item);
           updateSelected();
           populateList();
         });
         badge.appendChild(remove);
-        selectedContainer.appendChild(badge);
+        selContainer.appendChild(badge);
       });
       input.value = selectedEntities.join(', ');
     };
 
-    const openDropdown = () => {
-      populateList();
-      list.classList.remove('hidden');
+    const populateList = () => {
+      list.innerHTML = '';
+      Object.entries(Config.entitiesConfig).forEach(([entity, cfg]) => {
+        const li = document.createElement('li');
+        // parent
+        const parentRow = document.createElement('div');
+        parentRow.className = 'flex items-center px-2 py-1 hover:bg-gray-100 cursor-pointer';
+        parentRow.addEventListener('click', e => {
+          e.stopPropagation();
+          const idx = selectedEntities.indexOf(entity);
+          if (idx > -1) selectedEntities.splice(idx, 1);
+          else selectedEntities.push(entity);
+          updateSelected();
+          populateList();
+        });
+        const box = document.createElement('div');
+        box.className = 'w-4 h-4 mr-2 border rounded-sm flex items-center justify-center';
+        if (selectedEntities.includes(entity)) {
+          box.classList.add('border-blue-600');
+          box.innerHTML = `<svg class="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                           </svg>`;
+        }
+        parentRow.append(box, document.createTextNode(entity));
+        li.appendChild(parentRow);
+
+        // children if any
+        if (cfg.statuses.length) {
+          const childUl = document.createElement('ul');
+          childUl.className = 'ml-6 list-none';
+          cfg.statuses.forEach(s => {
+            const childLi = document.createElement('li');
+            childLi.className = 'flex items-center px-2 py-1 hover:bg-gray-50 cursor-pointer';
+            childLi.addEventListener('click', e => {
+              e.stopPropagation();
+              const i = selectedEntities.indexOf(s.type);
+              if (i > -1) selectedEntities.splice(i, 1);
+              else selectedEntities.push(s.type);
+              updateSelected();
+              populateList();
+            });
+            const cbox = document.createElement('div');
+            cbox.className = 'w-4 h-4 mr-2 border rounded-sm flex items-center justify-center';
+            if (selectedEntities.includes(s.type)) {
+              cbox.classList.add('border-blue-600');
+              cbox.innerHTML = `<svg class="w-3 h-3 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                </svg>`;
+            }
+            childLi.append(cbox, document.createTextNode(s.type));
+            childUl.appendChild(childLi);
+          });
+          li.appendChild(childUl);
+        }
+
+        list.appendChild(li);
+      });
+
+      // apply button
+      const applyLi = document.createElement('li');
+      applyLi.className = 'px-2 py-2 flex justify-center hover:bg-gray-100 cursor-pointer';
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = 'Apply';
+      applyBtn.className = 'bg-blue-600 text-white px-3 py-1 rounded w-full';
+      applyBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        this.selectedEntities = [...selectedEntities];
+        this.entities = [...this.selectedEntities];
+        list.classList.add('hidden');
+        if (this.selectedStart && this.selectedEnd) {
+          this.loadCustomRange(this.selectedStart, this.selectedEnd);
+        } else {
+          this.loadData(this.currentGranularity);
+        }
+      });
+      applyLi.appendChild(applyBtn);
+      list.appendChild(applyLi);
     };
 
-    toggle.addEventListener('click', e => { e.stopPropagation(); openDropdown(); });
-    input.addEventListener('click', e => { e.stopPropagation(); openDropdown(); });
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      populateList();
+      list.classList.remove('hidden');
+    });
+    input.addEventListener('click', e => {
+      e.stopPropagation();
+      populateList();
+      list.classList.remove('hidden');
+    });
     document.addEventListener('click', e => {
       if (!multiselect.contains(e.target)) list.classList.add('hidden');
     });
@@ -408,15 +451,14 @@ export default class ChartApp {
   start() {
     this.setupControls();
   }
+
   refererConditionUpdater(name) {
-    console.log('ChartApp text method called', name);
-    if (!name) {
-      ChartApp.refererNameCondition = '';
-    } else {
-      ChartApp.refererNameCondition = `{ andWhere: { Referrer: [{ where: { id: ${name} } }] } }`;
+    ChartApp.refererNameCondition = name
+      ? `{ andWhere: { Referrer: [{ where: { id: ${name} } }] } }`
+      : '';
+    // apply only if Jobs remains selected
+    if (this.entities.includes('Jobs')) {
+      this.loadData(ChartApp.updatedGranualarity);
     }
-    const granularity = ChartApp.updatedGranularity || 'weekly';
-    console.log('granualarity is', granularity);
-    this.loadData(granularity);
   }
 }

@@ -228,6 +228,27 @@
 
 
 </body>
+<script>
+    let removedCount = 0;
+
+    function removePlotlyLogomarks() {
+        const logomarks = document.querySelectorAll('a[href="https://plotly.com/"]');
+        if (logomarks.length) {
+            logomarks.forEach(logomark => logomark.remove());
+            removedCount = logomarks.length;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const attemptInterval = setInterval(function () {
+            if (!removedCount) {
+                removePlotlyLogomarks();
+            } else {
+                clearInterval(attemptInterval);
+            }
+        }, 500);
+    });
+</script>
 <script type="module" src="js/main.js"></script>
 
 </html>
